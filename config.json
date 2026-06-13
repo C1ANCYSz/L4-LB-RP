@@ -4,6 +4,7 @@
     "localhost:3001"
   ],
     "balanceMode":"leastConnections",
-    "level":"TCP/UDP"
+    "level":"TCP/UDP",
+    "maxConnections":5000
 
 }
