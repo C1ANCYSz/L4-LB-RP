@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"io"
+	"log"
 	"log/slog"
 	"net"
 	"net/http"
@@ -52,7 +53,7 @@ func (lb *LoadBalancer) Listen(addr string) error {
 		return err
 	}
 	//limit listener to 10K concurrent listeners to avoid go routines leaks
-	lb.listener = netutil.LimitListener(listener, 100)
+	lb.listener = netutil.LimitListener(listener, 10_000)
 	defer lb.listener.Close()
 
 	for {
@@ -87,6 +88,7 @@ func (lb *LoadBalancer) pingServers() {
 			continue
 		} else {
 			lb.servers[idx].up.Store(true)
+			log.Printf("server connections: %v\n", &server.connections)
 
 		}
 		up++
@@ -130,7 +132,6 @@ func (lb *LoadBalancer) handleConn(clientConn net.Conn) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	ip := clientConn.RemoteAddr().(*net.TCPAddr).IP.String()
-	lb.logger.Info("new connection", slog.String("ip", ip))
 
 	wg := sync.WaitGroup{}
 
@@ -157,27 +158,26 @@ func (lb *LoadBalancer) handleConn(clientConn net.Conn) {
 		clientConn.Close()
 		return
 	}
-	defer backendConn.Close()
-	defer clientConn.Close()
+	// defer backendConn.Close()
+	// defer clientConn.Close()
 
 	go func() {
 		<-ctx.Done()
 		backendConn.Close()
 		clientConn.Close()
-
 	}()
 
 	dialTook := time.Since(dialStart)
 
 	var sentBytes, recvBytes int64
-	var sendErr, recvErr error
 
 	wg.Go(func() {
 		n, err := io.Copy(backendConn, clientConn)
 		sentBytes = n
-		sendErr = err
-		if err != nil && !isBenignConnError(err) {
 
+		sendErrKind := classifyConnError(err)
+		if sendErrKind != ErrKindNone && sendErrKind != ErrKindBenign && sendErrKind != ErrKindCancelled {
+			lb.handleConnError("client → backend", err, sendErrKind, server)
 			cancel()
 			return
 		}
@@ -189,8 +189,9 @@ func (lb *LoadBalancer) handleConn(clientConn net.Conn) {
 	wg.Go(func() {
 		n, err := io.Copy(clientConn, backendConn)
 		recvBytes = n
-		recvErr = err
-		if err != nil && !isBenignConnError(err) {
+		recvErrKind := classifyConnError(err)
+		if recvErrKind != ErrKindNone && recvErrKind != ErrKindBenign && recvErrKind != ErrKindCancelled {
+			lb.handleConnError("backend → client", err, recvErrKind, server)
 			cancel()
 			return
 		}
@@ -201,22 +202,55 @@ func (lb *LoadBalancer) handleConn(clientConn net.Conn) {
 
 	wg.Wait()
 
-	// Log any non-benign errors individually
-	if !isBenignConnError(sendErr) {
-		lb.logger.Error("client → backend", slog.Any("err", sendErr))
-	}
-	if !isBenignConnError(recvErr) {
-		lb.logger.Error("backend → client", slog.Any("err", recvErr))
-	}
-
 	lb.logger.Info("served",
-		slog.String("client", clientConn.RemoteAddr().String()),
+		slog.String("client", ip),
 		slog.String("server", server.url),
 		slog.Duration("dial_took", dialTook),
 		slog.Duration("total", time.Since(start)),
 		slog.Int64("sent_bytes", sentBytes),
 		slog.Int64("recv_bytes", recvBytes),
+		slog.Int64("server_connections", server.connections.Load()),
 	)
+}
+
+func (lb *LoadBalancer) handleConnError(direction string, err error, kind ConnErrKind, server *Server) {
+	switch kind {
+	case ErrKindNone, ErrKindBenign, ErrKindCancelled:
+		// expected, swallow
+	case ErrKindTimeout:
+		lb.logger.Warn("connection timed out",
+			slog.String("direction", direction),
+			slog.Any("err", err),
+		)
+	case ErrKindRefused:
+		// backend is down — mark it
+		server.up.Store(false)
+		lb.logger.Error("backend refused connection",
+			slog.String("direction", direction),
+			slog.String("server", server.url),
+			slog.Any("err", err),
+		)
+	case ErrKindUnreachable:
+		server.up.Store(false)
+		lb.logger.Error("backend unreachable",
+			slog.String("direction", direction),
+			slog.String("server", server.url),
+			slog.Any("err", err),
+		)
+	case ErrKindExhausted:
+		// this is a system-level emergency
+		lb.logger.Error("RESOURCE EXHAUSTION — file descriptors or memory",
+			slog.String("direction", direction),
+			slog.Any("err", err),
+		)
+	default:
+		// ErrKindUnknown — log everything, don't swallow
+		lb.logger.Error("unclassified connection error",
+			slog.String("direction", direction),
+			slog.String("kind", kind.String()),
+			slog.Any("err", err),
+		)
+	}
 }
 
 func (lb *LoadBalancer) Shutdown() {

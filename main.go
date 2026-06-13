@@ -15,7 +15,7 @@ func main() {
 	}))
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGTERM, syscall.SIGINT)
-	ticker := time.NewTicker(time.Second * 20)
+	ticker := time.NewTicker(time.Second * 5)
 
 	serversUrls, balanceMode := LoadConfig()
 	servers := make([]Server, 0, len(serversUrls))
