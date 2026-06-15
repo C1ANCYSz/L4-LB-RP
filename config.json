@@ -2,8 +2,7 @@
   "IGNORE":[
     "www.google.com:80",
  
-    "aws-0-eu-west-1.pooler.supabase.com:5432",
-      "REMOVED_REDIS_URL"
+    "aws-0-eu-west-1.pooler.supabase.com:5432"
 ],
   "backends": [
     
