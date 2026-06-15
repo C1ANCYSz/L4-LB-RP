@@ -2,8 +2,7 @@
   "IGNORE":[
     "www.google.com:80",
  
-    "aws-0-eu-west-1.pooler.supabase.com:5432",
-      "redis://default:93EINO8uHtlUAPv7RaCVMY5rYmaMNOls@redis-15097.c11.us-east-1-2.ec2.cloud.redislabs.com:15097"
+    "aws-0-eu-west-1.pooler.supabase.com:5432"
 ],
   "backends": [
     
